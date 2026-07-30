@@ -49,7 +49,7 @@ flutter build windows --release
 
 ## 📦 Hazır Sürümü İndir (Son Kullanıcılar İçin)
 
-Kodlarla uğraşmadan uygulamayı doğrudan Windows bilgisayarınızda çalıştırmak istiyorsanız, projenin sağ tarafında bulunan **[Releases]([https://github.com](https://github.com/ERKANONER23/kelime_hatirlatici/releases))** bölümünden en güncel `ZIP` paketini indirebilirsiniz. 
+Kodlarla uğraşmadan uygulamayı doğrudan Windows bilgisayarınızda çalıştırmak istiyorsanız, projenin sağ tarafında bulunan **[Releases](https://github.com/ERKANONER23/kelime_hatirlatici/releases)** bölümünden en güncel `ZIP` paketini indirebilirsiniz. 
 
 *İndirdiğiniz ZIP dosyasını bir klasöre çıkartıp içerisindeki `.exe` dosyasına çift tıklamanız yeterlidir.*
 
