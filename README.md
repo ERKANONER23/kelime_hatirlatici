@@ -1,8 +1,7 @@
 <img width="1255" height="715" alt="image" src="https://github.com/user-attachments/assets/dcb6e136-f7c4-4957-80aa-2012bb032f18" />
 
 
-# 🇬🇧 🇹🇷 Windows Kelime H![Uploading image.png…]()
-atırlatıcı (Word Reminder)
+# 🇬🇧 🇹🇷 Windows Kelime Hatırlatıcı (Word Reminder)
 
 Flutter ile geliştirilmiş, Windows işletim sisteminde arka planda çalışarak kullanıcının belirlediği saniye aralıklarıyla İngilizce-Türkçe kelime hatırlatması yapan yerel bir masaüstü uygulamasıdır. 
 
