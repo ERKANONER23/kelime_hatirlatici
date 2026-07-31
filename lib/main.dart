@@ -1,25 +1,59 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Sadece sayı girişine izin vermek için
+import 'package:flutter/services.dart';
 import 'package:local_notifier/local_notifier.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:window_manager/window_manager.dart';
+import 'package:tray_manager/tray_manager.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Windows bildirimi için uygulamayı sisteme kaydediyoruz
+  // Windows bildirim sistemini kur
   await localNotifier.setup(
     appName: 'Kelime Hatırlatıcı',
     shortcutPolicy: ShortcutPolicy.requireCreate,
   );
 
-  runApp(const KelimeUygulamasi());
+  // Otomatik başlangıç ayarlarını yapılandır
+  launchAtStartup.setup(
+    appName: 'Kelime Hatirlatici',
+    appPath: Platform.resolvedExecutable,
+    args: ['--autostart'],
+  );
+
+  // Pencere yöneticisini başlat
+  await windowManager.ensureInitialized();
+
+  // Windows'un varsayılan kapatma (X) davranışını devre dışı bırakıp Flutter'a devrediyoruz
+  WindowOptions windowOptions = const WindowOptions(
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+  await windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.setPreventClose(
+      true,
+    ); // X'e basınca direkt kapanmayı engelle
+  });
+
+  // Eğer bilgisayar açılışında otomatik tetiklendiyse pencereyi gizle
+  bool arkaPlandaBaslasin = args.contains('--autostart');
+  if (arkaPlandaBaslasin) {
+    await windowManager.hide();
+  } else {
+    await windowManager.show();
+  }
+
+  runApp(KelimeUygulamasi(otomatikBaslat: arkaPlandaBaslasin));
 }
 
 class KelimeUygulamasi extends StatelessWidget {
-  const KelimeUygulamasi({super.key});
+  final bool otomatikBaslat;
+
+  const KelimeUygulamasi({super.key, this.otomatikBaslat = false});
 
   @override
   Widget build(BuildContext context) {
@@ -30,23 +64,21 @@ class KelimeUygulamasi extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      home: const AnaSayfa(),
+      home: AnaSayfa(otomatikBaslat: otomatikBaslat),
     );
   }
 }
 
 class AnaSayfa extends StatefulWidget {
-  const AnaSayfa({super.key});
+  final bool otomatikBaslat;
+  const AnaSayfa({super.key, required this.otomatikBaslat});
 
   @override
   State<AnaSayfa> createState() => _AnaSayfaState();
 }
 
-class _AnaSayfaState extends State<AnaSayfa> {
-  // Dinamik kelime listemiz
+class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
   List<Map<String, String>> _kelimeler = [];
-
-  // Form ve süre kontrolleri
   final TextEditingController _enController = TextEditingController();
   final TextEditingController _trController = TextEditingController();
   final TextEditingController _saniyeController = TextEditingController(
@@ -56,20 +88,123 @@ class _AnaSayfaState extends State<AnaSayfa> {
   int _bildirimAraligiSaniye = 10;
   Timer? _zamanlayici;
   bool _calisiyorMu = false;
+  bool _baslangictaAcilsinMi = false;
 
   @override
   void initState() {
     super.initState();
-    _kelimeleriDosyadanYukle(); // Uygulama açılınca dosyadan kelimeleri oku
+    windowManager.addListener(this); // Pencere olaylarını dinle
+    trayManager.addListener(this); // Sistem tepsisi olaylarını dinle
+    _sistemTepsisiKur(); // Sağ alttaki simgeyi hazırla
+
+    _kelimeleriDosyadanYukle().then((_) {
+      if (widget.otomatikBaslat) {
+        _hatirlaticiKapatAc();
+      }
+    });
+    _baslangicDurumunuKontrolEt();
   }
 
-  // 📂 DOSYA İŞLEMLERİ: Kelimelerin kaydedileceği txt dosyasını bulur
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    trayManager.removeListener(this);
+    _zamanlayici?.cancel();
+    _enController.dispose();
+    _trController.dispose();
+    _saniyeController.dispose();
+    super.dispose();
+  }
+
+  // 🛠️ SİZİN KLASÖRÜNÜZE VE .ICO DOSYALARINIZA GÖRE GÜNCELLENEN KISIM
+  Future<void> _sistemTepsisiKur() async {
+    try {
+      // Sağ alttaki ana ikon 'ico/app_icon.ico' olarak ayarlandı
+      await trayManager.setIcon('ico/app_icon.ico');
+    } catch (e) {
+      debugPrint("Ana ikon yüklenemedi: $e");
+    }
+
+    // Sizin hazırladığınız .ico dosyaları menü elemanlarına bağlandı
+    Menu menu = Menu(
+      items: [
+        MenuItem(
+          key: 'goster',
+          label: 'Programı Göster',
+          icon: 'ico/open.ico', // Göster ikonu
+        ),
+        MenuItem.separator(),
+        MenuItem(
+          key: 'kapat',
+          label: 'Kapat',
+          icon: 'ico/closed.ico', // Kapat ikonu
+        ),
+      ],
+    );
+    await trayManager.setContextMenu(menu);
+  }
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) async {
+    if (menuItem.key == 'goster') {
+      await windowManager.show();
+      await windowManager.focus();
+    } else if (menuItem.key == 'kapat') {
+      _zamanlayici?.cancel();
+      await trayManager.destroy();
+      exit(0);
+    }
+  }
+
+  @override
+  void onTrayIconRightMouseDown() async {
+    await trayManager.popUpContextMenu();
+  }
+
+  @override
+  void onTrayIconMouseDown() async {
+    await windowManager.show();
+    await windowManager.focus();
+  }
+
+  @override
+  void onWindowClose() async {
+    bool isPreventClose = await windowManager.isPreventClose();
+    if (isPreventClose) {
+      await windowManager.hide();
+
+      LocalNotification notification = LocalNotification(
+        title: "Kelime Hatırlatıcı",
+        body: "Uygulama arka planda çalışmaya devam ediyor.",
+        silent: true,
+      );
+      notification.show();
+    }
+  }
+
+  Future<void> _baslangicDurumunuKontrolEt() async {
+    bool kontrol = await launchAtStartup.isEnabled();
+    setState(() {
+      _baslangictaAcilsinMi = kontrol;
+    });
+  }
+
+  Future<void> _baslangicAyariniDegistir(bool deger) async {
+    if (deger) {
+      await launchAtStartup.enable();
+    } else {
+      await launchAtStartup.disable();
+    }
+    setState(() {
+      _baslangictaAcilsinMi = deger;
+    });
+  }
+
   Future<File> _getKelimeDosyasi() async {
     final dizin = await getApplicationDocumentsDirectory();
     return File('${dizin.path}/kelimelerim.txt');
   }
 
-  // 📂 DOSYA İŞLEMLERİ: Txt dosyasından verileri okur ve listeye aktarır
   Future<void> _kelimeleriDosyadanYukle() async {
     try {
       final dosya = await _getKelimeDosyasi();
@@ -79,17 +214,19 @@ class _AnaSayfaState extends State<AnaSayfa> {
 
         for (var satir in icerik) {
           if (satir.contains('|')) {
-            var parcalar = satir.split('|');
-            // Hatalı kısım düzeltildi: İndeksler köşeli parantez ile eklendi
-            yuklenenKelimeler.add({'en': parcalar[0], 'tr': parcalar[1]});
+            List<String> parcalar = satir.split('|');
+            if (parcalar.length >= 2) {
+              String ingilizce = parcalar.elementAt(0);
+              String turkce = parcalar.elementAt(1);
+
+              yuklenenKelimeler.add({'en': ingilizce, 'tr': turkce});
+            }
           }
         }
-
         setState(() {
           _kelimeler = yuklenenKelimeler;
         });
       } else {
-        // Dosya yoksa ilk açılış için varsayılan birkaç kelime ekle ve dosyayı yarat
         _kelimeler = [
           {'en': 'Accomplish', 'tr': 'Başarmak'},
           {'en': 'Benevolent', 'tr': 'Hayırsever'},
@@ -101,7 +238,6 @@ class _AnaSayfaState extends State<AnaSayfa> {
     }
   }
 
-  // 📂 DOSYA İŞLEMLERİ: Listeyi "ingilizce|türkçe" formatında txt dosyasına yazar
   Future<void> _kelimeleriDosyayaKaydet() async {
     final dosya = await _getKelimeDosyasi();
     List<String> satirlar = _kelimeler
@@ -110,51 +246,36 @@ class _AnaSayfaState extends State<AnaSayfa> {
     await dosya.writeAsString(satirlar.join('\n'));
   }
 
-  // ➕ YENİ KELİME EKLEME FONKSİYONU
   void _kelimeEkle() {
     final enText = _enController.text.trim();
     final trText = _trController.text.trim();
 
-    if (enText.isEmpty || trText.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lütfen her iki alanı da doldurun!')),
-      );
-      return;
-    }
+    if (enText.isEmpty || trText.isEmpty) return;
 
     setState(() {
       _kelimeler.add({'en': enText, 'tr': trText});
       _enController.clear();
       _trController.clear();
     });
-
-    _kelimeleriDosyayaKaydet(); // Dosyayı güncelle
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Kelime başarıyla kaydedildi!')),
-    );
+    _kelimeleriDosyayaKaydet();
   }
 
-  // 🔔 GERÇEK MASAÜSTÜ BİLDİRİMİ GÖNDERME FONKSİYONU
   void _gercekMasaustuBildirimiGonder() {
     if (_kelimeler.isEmpty) return;
 
     final rastgele = Random();
     final secilenKelime = _kelimeler[rastgele.nextInt(_kelimeler.length)];
 
-    // Windows'un en iri font şablonunu tetikler
     LocalNotification notification = LocalNotification(
-      title: "${secilenKelime['en']!.toUpperCase()}", // İngilizce büyük harf
-      body: "Anlamı: ${secilenKelime['tr']}", // Türkçe karşılığı
+      title: secilenKelime['en']!.toUpperCase(),
+      body: "Anlamı: ${secilenKelime['tr']}",
       silent: false,
     );
-
     notification.show();
   }
 
-  // ⏱ Zamanlayıcıyı başlatan veya güncelleyen fonksiyon
   void _zamanlayiciyiBaslat() {
-    _zamanlayici?.cancel(); // Eski zamanlayıcı varsa önce durdur
+    _zamanlayici?.cancel();
     _zamanlayici = Timer.periodic(Duration(seconds: _bildirimAraligiSaniye), (
       timer,
     ) {
@@ -163,14 +284,7 @@ class _AnaSayfaState extends State<AnaSayfa> {
   }
 
   void _hatirlaticiKapatAc() {
-    if (_kelimeler.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Listede kelime yok! Önce kelime ekleyin.'),
-        ),
-      );
-      return;
-    }
+    if (_kelimeler.isEmpty) return;
 
     setState(() {
       if (_calisiyorMu) {
@@ -179,19 +293,17 @@ class _AnaSayfaState extends State<AnaSayfa> {
       } else {
         _calisiyorMu = true;
         _zamanlayiciyiBaslat();
-        _gercekMasaustuBildirimiGonder(); // İlk bildirimi hemen at
+        _gercekMasaustuBildirimiGonder();
       }
     });
   }
 
-  // ⏱ Süre kutusu değiştiğinde tetiklenen fonksiyon
   void _sureyiGuncelle(String deger) {
     final yeniSure = int.tryParse(deger);
     if (yeniSure != null && yeniSure > 0) {
       setState(() {
         _bildirimAraligiSaniye = yeniSure;
       });
-      // Hatırlatıcı zaten çalışıyorsa yeni süreye otomatik adapte et
       if (_calisiyorMu) {
         _zamanlayiciyiBaslat();
       }
@@ -199,26 +311,16 @@ class _AnaSayfaState extends State<AnaSayfa> {
   }
 
   @override
-  void dispose() {
-    _zamanlayici?.cancel();
-    _enController.dispose();
-    _trController.dispose();
-    _saniyeController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Gelişmiş Kelime Hatırlatıcı (Saniye Ayarlı)'),
+        title: const Text('Kesintisiz Kelime Hatırlatıcı'),
         backgroundColor: Colors.blue.shade100,
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Row(
           children: [
-            // SOL PANEL: Kontroller ve Ayarlar
             Expanded(
               flex: 1,
               child: Card(
@@ -234,8 +336,18 @@ class _AnaSayfaState extends State<AnaSayfa> {
                           color: _calisiyorMu ? Colors.green : Colors.grey,
                         ),
                         const SizedBox(height: 10),
-
-                        // ⏱ Saniye Ayar Kutusu
+                        SwitchListTile(
+                          title: const Text(
+                            'Bilgisayar açılınca otomatik başlasın',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          value: _baslangictaAcilsinMi,
+                          onChanged: _baslangicAyariniDegistir,
+                        ),
+                        const Divider(),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -265,7 +377,6 @@ class _AnaSayfaState extends State<AnaSayfa> {
                           ],
                         ),
                         const SizedBox(height: 15),
-
                         ElevatedButton.icon(
                           onPressed: _hatirlaticiKapatAc,
                           icon: Icon(
@@ -282,11 +393,11 @@ class _AnaSayfaState extends State<AnaSayfa> {
                                 : Colors.green.shade100,
                           ),
                         ),
-                        const Divider(height: 40),
+                        const Divider(height: 30),
                         const Text(
                           'Yeni Kelime Ekle',
                           style: TextStyle(
-                            fontSize: 18,
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -312,7 +423,7 @@ class _AnaSayfaState extends State<AnaSayfa> {
                           style: ElevatedButton.styleFrom(
                             minimumSize: const Size.fromHeight(50),
                           ),
-                          child: const Text('Listeye ve Dosyaya Ekle'),
+                          child: const Text('Listeye Ekle'),
                         ),
                       ],
                     ),
@@ -321,7 +432,6 @@ class _AnaSayfaState extends State<AnaSayfa> {
               ),
             ),
             const SizedBox(width: 16),
-            // SAĞ PANEL: Kelime Listesi
             Expanded(
               flex: 1,
               child: Card(
