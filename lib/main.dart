@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_notifier/local_notifier.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -52,7 +51,6 @@ void main(List<String> args) async {
 
 class KelimeUygulamasi extends StatelessWidget {
   final bool otomatikBaslat;
-
   const KelimeUygulamasi({super.key, this.otomatikBaslat = false});
 
   @override
@@ -95,7 +93,9 @@ class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
     super.initState();
     windowManager.addListener(this); // Pencere olaylarını dinle
     trayManager.addListener(this); // Sistem tepsisi olaylarını dinle
-    _sistemTepsisiKur(); // Sağ alttaki simgeyi hazırla
+
+    // 🛠️ KESİN ÇÖZÜM: Önce varlıkları diske yazıyoruz, işlem bitince tepsiyi kuruyoruz
+    _ikonlariDiskeYazVeTepsiyiKur();
 
     _kelimeleriDosyadanYukle().then((_) {
       if (widget.otomatikBaslat) {
@@ -116,32 +116,64 @@ class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
     super.dispose();
   }
 
-  // 🛠️ SİZİN KLASÖRÜNÜZE VE .ICO DOSYALARINIZA GÖRE GÜNCELLENEN KISIM
-  Future<void> _sistemTepsisiKur() async {
+  // 🛠️ KESİN ÇÖZÜM ALANI: Varlıkları (Assets) otomatik olarak fiziksel dosyalara dönüştüren akıllı fonksiyon
+  Future<void> _ikonlariDiskeYazVeTepsiyiKur() async {
     try {
-      // Sağ alttaki ana ikon 'ico/app_icon.ico' olarak ayarlandı
-      await trayManager.setIcon('ico/app_icon.ico');
-    } catch (e) {
-      debugPrint("Ana ikon yüklenemedi: $e");
-    }
+      final String exeDizini = File(Platform.resolvedExecutable).parent.path;
+      final String icoKlasorYolu = '$exeDizini\\ico';
 
-    // Sizin hazırladığınız .ico dosyaları menü elemanlarına bağlandı
-    Menu menu = Menu(
-      items: [
-        MenuItem(
-          key: 'goster',
-          label: 'Programı Göster',
-          icon: 'ico/open.ico', // Göster ikonu
-        ),
-        MenuItem.separator(),
-        MenuItem(
-          key: 'kapat',
-          label: 'Kapat',
-          icon: 'ico/closed.ico', // Kapat ikonu
-        ),
-      ],
-    );
-    await trayManager.setContextMenu(menu);
+      // 'ico' klasörü yoksa oluştur
+      final Directory icoDizin = Directory(icoKlasorYolu);
+      if (!await icoDizin.exists()) {
+        await icoDizin.create(recursive: true);
+      }
+
+      // Varlıkları (Asset) sırasıyla fiziksel dosyaya dönüştüren yardımcı iç fonksiyon
+      Future<void> varligiDiskeYaz(
+        String varlikYolu,
+        String hedefDosyaAdi,
+      ) async {
+        final File hedefDosya = File('$icoKlasorYolu\\$hedefDosyaAdi');
+        if (!await hedefDosya.exists()) {
+          final ByteData data = await rootBundle.load(varlikYolu);
+          final List<int> bytes = data.buffer.asUint8List(
+            data.offsetInBytes,
+            data.lengthInBytes,
+          );
+          await hedefDosya.writeAsBytes(bytes);
+        }
+      }
+
+      // 3 ikon dosyasını da hafızadan diske çıkartıyoruz
+      await varligiDiskeYaz('ico/app_icon.ico', 'app_icon.ico');
+      await varligiDiskeYaz('ico/open.png', 'open.png');
+      await varligiDiskeYaz('ico/closed.png', 'closed.png');
+
+      // Çizgi yönlerini Windows Tray paketinin istediği düz çizgi (/) formatına çeviriyoruz
+      final String temizExeDizini = exeDizini.replaceAll('\\', '/');
+
+      // Fiziksel dosyalar oluştuğu için Windows artık ikonları kesinlikle görecektir
+      await trayManager.setIcon('$temizExeDizini/ico/app_icon.ico');
+
+      Menu menu = Menu(
+        items: [
+          MenuItem(
+            key: 'goster',
+            label: 'Programı Göster',
+            icon: '$temizExeDizini/ico/open.png',
+          ),
+          MenuItem.separator(),
+          MenuItem(
+            key: 'kapat',
+            label: 'Kapat',
+            icon: '$temizExeDizini/ico/closed.png',
+          ),
+        ],
+      );
+      await trayManager.setContextMenu(menu);
+    } catch (e) {
+      debugPrint("İkon çıkarma ve kurulum hatası: $e");
+    }
   }
 
   @override
@@ -201,8 +233,15 @@ class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
   }
 
   Future<File> _getKelimeDosyasi() async {
-    final dizin = await getApplicationDocumentsDirectory();
-    return File('${dizin.path}/kelimelerim.txt');
+    final String exeDizini = File(Platform.resolvedExecutable).parent.path;
+    final String dataKlasorYolu = '$exeDizini\\data';
+
+    final Directory dataDizin = Directory(dataKlasorYolu);
+    if (!await dataDizin.exists()) {
+      await dataDizin.create(recursive: true);
+    }
+
+    return File('$dataKlasorYolu\\kelimelerim.txt');
   }
 
   Future<void> _kelimeleriDosyadanYukle() async {
@@ -300,6 +339,7 @@ class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
 
   void _sureyiGuncelle(String deger) {
     final yeniSure = int.tryParse(deger);
+
     if (yeniSure != null && yeniSure > 0) {
       setState(() {
         _bildirimAraligiSaniye = yeniSure;
@@ -311,7 +351,8 @@ class _AnaSayfaState extends State<AnaSayfa> with WindowListener, TrayListener {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget
+  build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Kesintisiz Kelime Hatırlatıcı'),
